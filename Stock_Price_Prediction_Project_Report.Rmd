@@ -1,0 +1,301 @@
+---
+title: "Stock Price Prediction with K-nearest Neighbors (KNN) and Random Forest"
+author: "Wan Chi Fung,Victor"
+date: "2020/9/13"
+header-includes:
+   - \usepackage[utf8]{inputenc}
+   - \usepackage{amsmath}
+output:
+  pdf_document:
+  html_document: default
+---
+## 1. Introduction
+Predicting stock price is one of the popular fields where machine learning is applicable. Market trends, news, price action, and performance of the industry are some of the key factors affecting the stock price. This project will focus on the price action and aims to predict stock price on the next day whether it is up or down, utilizing KNN, random forest, and financial indicators to maximize the accuracy of the model.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## 2. Methods
+### 2.1 Dataset Preperation
+```{r Download data set, include=FALSE}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(readr)) install.packages("readr", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+if(!require(TTR)) install.packages("TTR", repos = "http://cran.us.r-project.org")
+if(!require(yardstick)) install.packages("yardstick", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library (readr)
+library(rpart)
+library(randomForest)
+library(TTR)
+library(yardstick)
+
+#Download The Data Set
+# Facebook Stock Price dataset:
+# https://github.com/victorwancf/Stock_Price_Prediction/raw/master/FB.csv
+# Nasdaq Daily Index dataset:
+# https://github.com/victorwancf/Stock_Price_Prediction/raw/master/Nasdaq.csv
+
+urlfile="https://github.com/victorwancf/Stock_Price_Prediction/raw/master/FB.csv"
+stock <- read_csv(url(urlfile))
+```
+
+### 2.2 Data Wrangling
+The dataset used in the Facebook stock price dataset was downloaded from Kaggle. The dataset consists of 7 columns of information on the Facebook stock from 2012 to 2020:
+
+* Date : Date with stock price recorded
+* Open : Opening price of the stock
+* High : Maximum price of the stock for the day
+* Low : Minimum price of the stock for the day
+* Close : Closing price of stock for the day 
+* Adjusted Close : Amending a stock's closing price to reflect that stock's value after accounting for any corporate actions
+* Volume : The physical number of shares traded of that stock on a particular day
+
+```{r Changing data type, include=FALSE}
+colnames(stock) <- c("Date", "Open", "High","Low","Close","Adjusted_Close","Volume")
+stock <- as.data.frame(stock) %>% mutate(Date = as.Date(Date),
+                                   Open = as.numeric(Open),
+                                   High = as.numeric(High),
+                                   Low = as.numeric(Low),
+                                   Close = as.numeric(Close),
+                                   Adjusted_Close = as.numeric(Adjusted_Close),
+                                   Volume = as.numeric(Volume))
+```
+
+```{r view data, echo=FALSE}
+head(stock) %>% knitr::kable()
+```
+
+### 2.2.1 The facebook stock price
+```{r Stock graph, echo=FALSE}
+stock %>% ggplot(aes(Date,Adjusted_Close)) +
+  geom_line(colour = "lightblue", size = 1) +
+  ggtitle("Adjusted Close Price of Facebook from 2012 to 2020")
+```
+
+### 2.3 Adding Indicators
+As momentum changes before the price changes, some price momentum indicators are added to the dataset and used as the model training feature to increase the accuracy of the model.
+
+### 2.3.1 Change in Price and Signal Flag
+Signal Flag indicates that the stock price on that day is increased, decreased, or unchanged. Change in price indicates how much do the prices are different between two Consecutive days. More precisely, the change in price is the difference between the adjusted closing price of the consecutive day. 
+Signal Flag is the value that the model is going to predict. It is composed of three values. When the change in price is larger than 0, Signal Flag is 1. When the change in price is equal to 0, Signal Flag is 0. When the change in price is less 0, Signal Flag is -1.
+
+\begin{align*}
+ Change in price &= C_t - C_{t-1}
+\end{align*}
+
+where C_t is the adjusted closing price at time t.
+
+### 2.3.2 Relative Strength Index (RSI)
+RSI is popular momentum indicator determines the stock is oversold or overbrought. RSI values  are ranged from 0 to 100. Normally, RSI above 70 is overbrought and below 30 is oversold.
+
+\begin{align*}
+RSI &= {100} - {\frac{100}{1 + RS}}
+\end{align*}
+
+where RS is the relative strength factor and defined as the ratio between two smoothed moving average.
+
+### 2.3.3 Moving Average Convergence Divergence (MACD)
+MACD consist of two part, the MACD value and the signal value. When the MACD value is above the signal value, it indicates a buy signal. When the MACD value is below the signal value, it indicates a sell signal. The MACD and Signal line are defined as:
+
+\begin{align*}
+MACD &= {EMA_{12}(C)} - {EMA_{26}(C)}
+\end{align*}
+
+\begin{align*}
+SignalLine &= {EMA_{9}(MACD)}
+\end{align*}
+
+Where C is the adjusted closing price and $EMA_9$ is the 9 day Exponential Moving Average
+
+### 2.3.4 Stochastic Oscillator
+Stochastic Oscillator measures the level of the closing price relative to the low-high range over a period of time. The fask K in stochastic oscillator will be used in this project.
+
+\begin{align*}
+K &= 100* {\frac{C-L_{14}}{H_{14}-L_{14}}}
+\end{align*}
+
+where C is the adjusted closing price, $L_{14}$ is the lowest Low over the past 14 days and $H_{14}$ is the highest high over the past 14 days.
+
+### 2.3.5 Williams %R
+Williams %R ranges from -100 to 0. When the value is above -20, it indicates a sell signal. When its value is below -80, it indicates a buy signal.
+
+\begin{align*}
+R &= \frac{H_{14}-C}{H_{14}-L_{14}}* (-100)
+\end{align*}
+
+where C is the adjusted closing price, $L_{14}$ is the lowest Low over the past 14 days and $H_{14}$ is the highest high over the past 14 days.
+
+### 2.3.6  Price Rate Of Change
+It measures the most recent change in price with respect to the price in n days ago.
+
+\begin{align*}
+PROC_t &= \frac{C_t-C_{t-n}}{C_{t-n}}
+\end{align*}
+
+where $PROC_t$ is the Price Rate of Change at time t and $C_t$ is the adjusted closing price at time t.
+
+### 2.3.7 On Balance Volume
+On balance volume (OBV) utilizes changes in volume to estimate changes in stock price. It cumulatively adds the volumes on days when the price group, and subtracts the volume on the days when price go down, compared to the prices of the previous day.
+
+\begin{align*}
+OBV(t) &= OBV(t-1) + Vol(t)      & \quad \text{if } C(t) > C(t-1)
+\end{align*}
+\begin{align*}
+OBV(t) &= OBV(t-1) - Vol(t)  & \quad \text{if } C(t) < C(t-1)
+\end{align*} 
+\begin{align*}
+OBV(t) &= OBV(t-1)  & \quad \text{if } C(t) = C(t-1)
+\end{align*}
+
+where $C(t)$ is the adjusted closing price at time t.
+
+```{r adding indicators, include=FALSE}
+stock <- stock %>% mutate(Change_in_price = Adjusted_Close - lag(Adjusted_Close),
+                          Singal_Flag = as.factor(sign(Change_in_price)),
+                          RSI = RSI(Adjusted_Close,n=14),
+                          MACD = MACD(Adjusted_Close, 12, 26, 9)[,"macd"],
+                          WPR = WPR(stock[,c("High","Low","Close")]),
+                          stoch = stoch(stock[,c("High","Low","Close")],14,3,3)[,"fastK"],
+                          ROC = ROC(Adjusted_Close, n = 9),
+                          OBV = OBV(Adjusted_Close,Volume))
+
+# A standard window is used for all indicators, such as RSI(14), MACD(12,26,9), Stoch(14,3,3) and ROC(9).
+```
+
+### 2.3.8 NAs
+Some indicators are using past 14 days or 9 days data, for the first 14 dates of the indicator would become NA. Therefore, the first 14 dates of the data cannot be used.
+```{r removing NAs, include=FALSE}
+stock <- na.omit(stock) #Removing NAs
+```
+
+### 2.4 Create train set, test set and validation set
+The train set, test set and validation are split from the facebook stock price dataset with a approximate ratio of 7:2:1.
+
+```{r Create train_test_validation set, include=FALSE}
+set.seed(1, sample.kind="Rounding")
+test_index <- createDataPartition(y = stock$Singal_Flag, times = 1, p = 0.1, list = FALSE)
+edx <- stock[-test_index,] #EDX set is used for seperating Train set and the Test set
+stock_Validation <- stock[test_index,]
+test_index <- createDataPartition(stock$Singal_Flag, times = 1, p = 0.2, list = FALSE)
+stock_Train_set <- edx %>% slice(-test_index)
+stock_Test_set <- edx %>% slice(test_index)
+```
+
+```{r dates of dataset, echo=FALSE}
+#set represents dates (see if needs, or just random seperate the dataset)
+```
+
+### 2.5 Model Building
+### 2.5.1 k-nearest neighbors (KNN)
+To solve this classification problem , KNN method with cross validation is used. Apart from the indicators mentioned, the open of the stock is also considered to improve the accuracy of the model.
+```{r knn, echo=FALSE}
+set.seed(1)
+control <- trainControl(method = "cv", number = 4, p = .9)
+train_knn <- train(Singal_Flag ~ RSI + OBV + WPR + stoch + Open +  MACD + ROC , data = stock_Train_set, 
+                   method = "knn", 
+                   tuneGrid = data.frame(k = seq(3,21,2)),
+                   trControl = control)
+
+plot(train_knn)
+```
+
+k = 5 will be used for training.
+
+```{r knn acc, echo=FALSE}
+fit_knn <- knn3(Singal_Flag ~ RSI + OBV + WPR + stoch + Open +  MACD + ROC  , data = stock_Train_set,  k = 5)
+stock_pred_knn <- predict(fit_knn, stock_Test_set, type="class")
+
+knn_acc <- confusionMatrix(stock_pred_knn,stock_Test_set$Singal_Flag)$overall["Accuracy"]
+
+acc_results <- tibble(method = "KNN", Accuracy = knn_acc)
+acc_results %>% knitr::kable()
+```
+
+The Accuracy of the KNN model is 0.5229111, which is slightly better than guessing. 
+
+### 2.5.2 Random Forest
+Another popular classification model is random forest. It is a supervised machine learning algorithim that uses multiple decision trees in aggregate to help make more stable and accurate predictions.
+```{r Random Forest, echo=FALSE, warning=FALSE}
+set.seed(1)
+control <- trainControl(method="cv", number = 5)
+grid <- data.frame(mtry = c(1, 5, 10, 25, 50, 100, 200))
+
+stock_train_rf <-  train(Singal_Flag ~ RSI + ROC + OBV + WPR + ROC , data = stock_Train_set,
+                         method = "rf", 
+                         ntree = 300,
+                         trControl = control,
+                         tuneGrid = grid)
+
+stock_fit_rf <- randomForest(Singal_Flag ~ RSI + OBV + WPR + stoch + Open +  MACD + ROC,  data = stock_Train_set,
+                             minNode = stock_train_rf$bestTune$mtry)
+
+stock_pred_rf <- predict(stock_fit_rf, stock_Test_set)
+
+RF_acc <- confusionMatrix(stock_pred_rf,stock_Test_set$Singal_Flag)$overall["Accuracy"]
+acc_results <- bind_rows(acc_results,
+                          data_frame(method="Random Forest",
+                                     Accuracy = RF_acc))
+acc_results %>% knitr::kable()
+```
+
+The accuracy in random forest is much higher than that in KNN. It is close to 0.7. Random forest seems to be a better method for stock price prediction.
+
+## 3. Result
+### 3.1 Model evaluation on validation set
+The random forest model is chosen for the final evaluation of our dataset.
+```{r validation, echo=FALSE}
+set.seed(1)
+stock_fit_rf <- randomForest(Singal_Flag ~ RSI + OBV + WPR + stoch + Open +  MACD + ROC,  data = stock_Train_set,
+                             minNode = stock_train_rf$bestTune$mtry)
+
+stock_pred_rf <- predict(stock_fit_rf, stock_Validation)
+
+RF_acc <- confusionMatrix(stock_pred_rf,stock_Validation$Singal_Flag)$overall["Accuracy"]
+acc_results <- data_frame(method="Random Forest on validation set",
+                                    Accuracy = RF_acc)
+acc_results %>% knitr::kable()
+```
+
+The Validation set accuracy is 0.6650485.
+
+### Coufusion Matrix
+```{r Coufusion Matrix, echo=FALSE, warning=FALSE}
+con_data <- data.frame(turth = stock_Validation$Singal_Flag, rf_pred = stock_pred_rf)
+con_data$turth <- as.factor(con_data$turth)
+con_data$rf_pred <- as.factor(con_data$rf_pred)
+
+cm <- conf_mat(con_data, turth, rf_pred)
+autoplot(cm,type = "heatmap") + 
+  scale_fill_gradient(low="#D6EAF8",high = "#2E86C1") +
+  theme(legend.position = "right") +
+  ggtitle("Confusion matrix for random forest model") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+The number of True positive (1) is larger than false positive and the number of True negative (-1) is larger than the false negative. A unchanged signal flag cannot be predicted correctlt and it is classfied into -1.
+
+
+```{r variable importance, echo=FALSE}
+varImpPlot(stock_fit_rf, main = "Plot of variable importance in Random Forest") #Plot of variable importance
+```
+The Williams %R and Stochastic Oscillator had the largest mean decrease gini, which mean they can more significantly affect the stock price change.
+
+## 4. Conclusion
+To conclude, the model had a satisfactory result that could predict the daily uptrend and downtrend of the stock with an accuracy of 0.6650485.
+
+### 4.1 Limitation
+As there are numerous factors affecting stock price change in the market, such as company policy and news, the overall market trend, and the overall industry performance, the accuracy of the prediction is hard to improve without additional information on the factors mentioned.
+
+### 4.2 Future work
+A more precise result may be able to obtain through predicting the actual daily stock price instead of the
+daily uptrend and downtrend of the stock. Time series analysis, such as Long Short Term Memory and ARIMA could be applied to develop a more precise model on the stock price prediction.
+
+
+
